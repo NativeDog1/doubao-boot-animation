@@ -1,0 +1,15 @@
+{
+  "video": "assets/boot.mp4",
+  "fit": "cover",
+  "muted": false,
+  "volume": 1,
+  "autoplayWithSound": true,
+  "skipButton": true,
+  "skipOnClick": true,
+  "skipOnEscape": true,
+  "handoffMs": 520,
+  "waitForWindowMs": 15000,
+  "firstFrameMs": 8000,
+  "maxVideoMB": 30,
+  "doubaoPath": ""
+}

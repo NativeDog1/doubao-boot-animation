@@ -1,0 +1,32 @@
+{
+  "name": "doubao-boot-animation",
+  "version": "0.2.0",
+  "private": true,
+  "description": "豆包桌面端开机动画：启动时在窗口内播放一段带声音的片头，播完虚化淡出，让应用从模糊里浮出来。",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node bin/inject.mjs",
+    "check": "node --check bin/inject.mjs && node --check scripts/smoke.mjs",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "keywords": [
+    "doubao",
+    "豆包",
+    "boot-animation",
+    "splash",
+    "cdp"
+  ],
+  "license": "BSD-3-Clause",
+  "author": "NativeDog1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NativeDog1/doubao-boot-animation.git"
+  },
+  "homepage": "https://github.com/NativeDog1/doubao-boot-animation#readme",
+  "bugs": {
+    "url": "https://github.com/NativeDog1/doubao-boot-animation/issues"
+  }
+}
