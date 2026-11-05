@@ -1,6 +1,6 @@
 {
   "name": "doubao-boot-animation",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "豆包桌面端开机动画：启动时在窗口内播放一段带声音的片头，播完虚化淡出，让应用从模糊里浮出来。",
   "type": "module",

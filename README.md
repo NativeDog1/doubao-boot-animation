@@ -13,9 +13,9 @@
 
 ## 先说清楚它是什么
 
-**豆包桌面端没有插件系统。** 它不像 DSH 那样有 cordis 插件槽，也不是 Electron
-（没有 `app.asar` 可以改）：它是自绘的 Chromium 壳（`Doubao.exe` + `Doubao.dll`，
-Chromium 147），界面本身是 `chrome://doubao-chat/chat` 这个特权页里的 React 应用。
+**豆包桌面端没有插件系统。** 它不是 Electron（没有 `app.asar` 可以改），也没有任何官方
+扩展点：它是自绘的 Chromium 壳（`Doubao.exe` + `Doubao.dll`，Chromium 147），界面本身是
+`chrome://doubao-chat/chat` 这个特权页里的 React 应用。
 
 所以这个项目走的是**不装进豆包、也不改豆包**的路：
 
@@ -95,7 +95,7 @@ ffmpeg -i in.mp4 -c:v copy -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a aac -b:a 160
 ## 为什么「跳过」在右下角
 
 豆包把**窗口按钮（最小化 / 最大化 / 关闭）画在页面右上角**，不是系统绘制的。
-DSH 那个插件要把「跳过」放在右上是因为系统标题栏会吃掉点击；豆包正好相反——
+有些桌面端会把「跳过」放在右上角，因为系统标题栏会吃掉点击；豆包正好相反——
 浮层覆盖整个页面，放右上会**压住关闭键**：想关窗口的人会先点到「跳过」。
 所以这里把跳过放右下角，Esc 也留着。
 
