@@ -41,26 +41,30 @@ const MIME = {
   '.mov': 'video/quicktime',
 }
 
-/** 每次现读配置：面板与注入器各读各的，绝不各说各话。 */
+/**
+ * 面板看到的状态 **就是** 注入器会用的值。
+ *
+ * 这里刻意不再自己夹一遍：`readConfig()` 已经走 `normalizeConfig()` 收敛过。
+ * 两处各夹一套，迟早会出现"面板显示 60%、实际播 100%"这种各说各话——
+ * 而且这种偏差没有任何报错，用户只会觉得"设置了没用"。
+ */
 function snapshot() {
   const { config } = readConfig(configPath)
-  const clipsDir = resolve(ROOT, config.clipsDir || 'clips')
+  const clipsDir = resolve(ROOT, config.clipsDir)
   const clips = listClips(clipsDir)
-  const selected = clips.some((clip) => clip.file === config.selected)
-    ? config.selected
-    : clips[0]?.file ?? ''
+  const selected = clips.some((clip) => clip.file === config.selected) ? config.selected : clips[0]?.file ?? ''
   return {
     clips,
     selected,
-    random: config.random === true,
-    volume: Number.isFinite(Number(config.volume)) ? Number(config.volume) : 1,
-    muted: config.muted === true,
-    fit: config.fit === 'contain' ? 'contain' : 'cover',
-    skipButton: config.skipButton !== false,
-    skipOnClick: config.skipOnClick !== false,
-    skipOnEscape: config.skipOnEscape !== false,
-    handoffMs: Number.isFinite(Number(config.handoffMs)) ? Number(config.handoffMs) : 520,
-    maxVideoMB: Number.isFinite(Number(config.maxVideoMB)) ? Number(config.maxVideoMB) : 30,
+    random: config.random,
+    volume: config.volume,
+    muted: config.muted,
+    fit: config.fit,
+    skipButton: config.skipButton,
+    skipOnClick: config.skipOnClick,
+    skipOnEscape: config.skipOnEscape,
+    handoffMs: config.handoffMs,
+    maxVideoMB: config.maxVideoMB,
     clipsDir,
   }
 }
@@ -95,30 +99,76 @@ function readBody(request, limit = 64 * 1024) {
   })
 }
 
+/**
+ * 解析 `Range` 头。
+ *
+ * 原来的实现用 `/bytes=(\d*)-(\d*)/` 直接取两段数字，有两个真问题：
+ * - **后缀范围**（`bytes=-500` 表示"最后 500 字节"）被读成 `0-500`，预览会跳到片头；
+ * - 起始位置或结束位置**超出文件大小**时没有夹取，`content-length` 会声明得比实际
+ *   `createReadStream` 能读到的多，浏览器就卡在"缓冲中"不往下走。
+ *
+ * 返回 `null` 表示"这个范围不可满足"，按 HTTP 语义应当回 416。
+ */
+function parseRange(header, size) {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(header).trim())
+  if (match === null) return null
+  const [, rawStart, rawEnd] = match
+  if (rawStart === '' && rawEnd === '') return null
+
+  let start
+  let end
+  if (rawStart === '') {
+    const suffix = Number(rawEnd)
+    if (!Number.isFinite(suffix) || suffix <= 0) return null
+    start = Math.max(0, size - suffix)
+    end = size - 1
+  } else {
+    start = Number(rawStart)
+    end = rawEnd === '' ? size - 1 : Number(rawEnd)
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+    end = Math.min(end, size - 1)
+  }
+  if (!Number.isFinite(start) || start < 0 || start > end || start >= size) return null
+  return { start, end }
+}
+
 function serveMedia(response, clipsDir, file, rangeHeader) {
   const clip = listClips(clipsDir).find((entry) => entry.file === file)
   if (clip === undefined) {
     response.writeHead(404).end()
     return
   }
-  const size = statSync(clip.path).size
+  let size
+  try {
+    size = statSync(clip.path).size
+  } catch {
+    // 列目录到读文件之间被删掉了
+    response.writeHead(404).end()
+    return
+  }
   const type = MIME[extname(clip.path).toLowerCase()] ?? 'application/octet-stream'
   if (typeof rangeHeader === 'string') {
-    const match = /bytes=(\d*)-(\d*)/.exec(rangeHeader)
-    const start = Number(match?.[1] || 0)
-    const end = match?.[2] ? Number(match[2]) : size - 1
+    const range = parseRange(rangeHeader, size)
+    if (range === null) {
+      response.writeHead(416, { 'content-range': `bytes */${size}`, 'accept-ranges': 'bytes' }).end()
+      return
+    }
     response.writeHead(206, {
       'content-type': type,
       'accept-ranges': 'bytes',
-      'content-range': `bytes ${start}-${end}/${size}`,
-      'content-length': end - start + 1,
+      'content-range': `bytes ${range.start}-${range.end}/${size}`,
+      'content-length': range.end - range.start + 1,
       'cache-control': 'no-store',
     })
-    createReadStream(clip.path, { start, end }).pipe(response)
+    const stream = createReadStream(clip.path, { start: range.start, end: range.end })
+    stream.on('error', () => response.destroy())
+    stream.pipe(response)
     return
   }
   response.writeHead(200, { 'content-type': type, 'accept-ranges': 'bytes', 'content-length': size, 'cache-control': 'no-store' })
-  createReadStream(clip.path).pipe(response)
+  const stream = createReadStream(clip.path)
+  stream.on('error', () => response.destroy())
+  stream.pipe(response)
 }
 
 const server = createServer(async (request, response) => {

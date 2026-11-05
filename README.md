@@ -31,12 +31,18 @@ launch.vbs ──▶ 以 --remote-debugging-port 正常启动豆包（只监听 
 
 ## 安装
 
-1. 装 [Node.js 22+](https://nodejs.org/)（只需一次；`launch.vbs` 会检查）。
+1. 装 [Node.js 22+](https://nodejs.org/)（只需一次；启动器会检查）。
 2. 把整个文件夹解压到任意位置（推荐 `%LOCALAPPDATA%\Programs\doubao-boot-animation`）。
-3. 双击 **`launch.vbs`**（静默）或 **`launch.cmd`**（能看到日志）。
+3. 双击 **`安装快捷方式.vbs`** —— 桌面会出现一个叫 **「豆包（开机动画）」** 的图标，
+   用豆包自己的图标、点它就是带片头的启动。
+4. 以后**用它打开豆包**；点原来那个豆包图标不会播片头（原因见下）。
 
-想让它变成"日常打开豆包的方式"：右键 `launch.vbs` → 发送到 → 桌面快捷方式，
-把名字改成「豆包」，用它替换原来的豆包图标即可。
+> ⚠️ 这一条最容易踩：**片头只在"从启动器启动"时播放。**
+> 豆包是单实例的——你先用原图标打开了它，再点启动器也不会播（端口加不进去）。
+> 这种情况启动器会弹一句「豆包已经在运行了，要关掉重开吗？」，选「是」就会关掉重开并播片头。
+
+双击 **`launch.vbs`**（静默）或 `launch.cmd`（能看到日志）也是同一个入口，
+快捷方式只是把它做成"和豆包一模一样的一个图标"。
 
 ## 设置（选片头、音量、跳过方式）
 
@@ -146,10 +152,13 @@ ffmpeg -i in.mp4 -c:v copy -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a aac -b:a 160
 ## 已知限制
 
 - **单实例**：豆包已经在运行时，再带端口启动不会生效（会被转交给已有进程）。
-  这时启动器会明确提示"先退出豆包"，而不是假装启动了。
+  这时启动器会**弹一句「要关掉重开吗？」**，选「是」就关掉重开并播片头；
+  不想被打断就选「否」，豆包保持原样。问不到人（PowerShell 被策略挡了、或两分钟没回应）
+  一律按「否」处理——不会去动你正在用的豆包。
 - **必须从本启动器进入**：你点原来的豆包图标，就没有片头。
 - **Windows**：目前只做了 Windows。豆包有 macOS 版，路径与进程检测需要另写。
-- **最小化启动**：如果豆包启动时是收在托盘/最小化的，片头不会空放（会等窗口可见，超时就不播）。
+- **最小化启动**：如果豆包启动时是收在托盘/最小化的，片头不会空放（会等窗口可见，超时就不播；
+  这时退出码是 5，`launch.cmd` 会把它当"没播出来"报告，而不是安静地成功）。
 - **声音依赖启动参数**：`autoplayWithSound: false`（或企业策略禁止）时，片头会退回静音并把
   「点击开启声音」交给用户；这一点在日志里记作 `soundBlocked`。
 - **豆包更新后可能失效**：页面地址（`chrome://doubao-chat/chat`）或窗口按钮布局变化，
@@ -160,12 +169,15 @@ ffmpeg -i in.mp4 -c:v copy -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a aac -b:a 160
 | 现象 | 原因 / 处理 |
 |---|---|
 | 双击没反应 | 没装 Node 22+（静默版会转到 `launch.cmd` 显示原因） |
+| **点原来的豆包图标，没有片头** | **这是设计**：普通启动不带调试端口，注入器没有介入的机会（日志里连记录都不会有）。请用桌面上的「豆包（开机动画）」快捷方式，或 `launch.vbs` |
+| 启动器提示"豆包已经在运行" | 单实例：已经在跑的豆包加不了端口。启动器会问要不要关掉重开，选「是」即可 |
 | 豆包开了，但没片头 | 看 `%LOCALAPPDATA%\DoubaoBootAnimation\logs\latest.log`；最常见是"豆包已在运行" |
 | 片头是黑的 | 视频没有 faststart，或编码浏览器不支持（用 H.264 + AAC） |
 | 片头结束后界面卡住 | 不该发生：首帧/播放看门狗会强制交接；有日志请提 issue |
 | 换视频没生效 | 确认改的是 `config.json` 指向的那个文件，且没被豆包占用 |
+| 控制台里中文是乱码 | 已经不用管：三个 `.cmd` 入口都会先 `chcp 65001`。还乱说明你是直接 `node bin/inject.mjs` 跑的，请用 `launch.cmd` |
 
-日志永远在：`%LOCALAPPDATA%\DoubaoBootAnimation\logs\latest.log`
+日志永远在：`%LOCALAPPDATA%\DoubaoBootAnimation\logs\latest.log`（超过 1MB 会滚动成 `latest.log.1`）
 
 ## 卸载
 
@@ -175,7 +187,9 @@ ffmpeg -i in.mp4 -c:v copy -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a aac -b:a 160
 ## 目录结构
 
 ```
-launch.vbs / launch.cmd      入口（静默 / 带日志）
+launch.vbs / launch.cmd      启动器（静默 / 带日志）
+安装快捷方式.vbs               在桌面创建「豆包（开机动画）」快捷方式
+bin/install-shortcut.mjs     快捷方式创建逻辑（图标取自豆包 exe）
 设置.vbs / settings.cmd       设置页：选片头、音量、铺满、跳过方式
 config.json                  片头与行为配置（设置页写的就是它）
 clips/                       片头目录：丢进去就出现在设置页
@@ -183,9 +197,13 @@ clips/clips.json             可选：给片头起展示名 / 写一句说明
 bin/inject.mjs               注入器：启动豆包 → CDP 连接 → 注入浮层 → 交接 → 清理
 bin/settings.mjs             设置页服务端（一次性本地服务 + token）
 bin/clip-library.mjs         片库：扫目录、按配置选一条
-bin/config.mjs               配置读写（原子写，注入器与设置页共用）
+bin/config.mjs               配置读写（原子写 + 字段收敛，注入器与设置页共用）
+bin/doubao.mjs               豆包定位 / 是否在跑 / 关掉（注入器、快捷方式、自检共用）
+bin/lock.mjs                 单实例闸门（双击两下不会互相拆台）
 ui/settings.html             设置页前端
 scripts/smoke.mjs            端到端自检（会启动并关闭一次豆包）
+scripts/verify-config.mjs    配置容错自检（坏值收敛，不启动任何东西）
+scripts/verify-lock.mjs      单实例闸门自检（含残锁接管）
 scripts/verify-settings.mjs  设置页服务端自检（不开浏览器、不动你的配置）
 docs/ARCHITECTURE.md         为什么这么做、怎么验证的
 docs/media/                  README 用的截图
@@ -205,12 +223,18 @@ docs/media/                  README 用的截图
 | 片头上只有跳过 | 自检断言 `#dba-actions` 里**只有 1 个**控件（设置不塞进动画） |
 | 交接是否生效 | 退场 230ms 时截图：视频已淡出、应用呈强模糊，随后转清 |
 | 退场清理 | 注入器 exit 0，`#dba-root` 与样式表都已移除 |
-| 设置页 | `verify:settings` 覆盖：token 校验、列目录、选用落盘并关随机、目录外文件被拒、音量夹取、铺满/跳过开关落盘、HTML 带状态、预览走 Range |
+| 播完就退出 | 注入器总耗时 **10.0s**（8.1 秒片头 + 启动与握手）。曾经是 24.4s：兜底计时器没被取消，把进程按在原地 |
+| 设置页 | `verify:settings` 覆盖：token 校验、列目录、选用落盘并关随机、目录外文件被拒、音量夹取、铺满/跳过开关落盘、HTML 带状态、预览走 Range（含后缀范围与 416） |
+| 配置容错 | `verify:config`：`"volume": "0.6"` / `null` / `"fit": "stretch"` 之类的坏值全部收敛到安全范围 |
+| 单实例 | `verify:lock`：有活锁时让路、残锁自动接管、`release` 不删别人的锁 |
 
-`npm run smoke` 会把上面这条链路自动跑一遍（需要豆包没在运行，测试结束会关掉它自己启动的实例）。
-它同时是"有声音"的验收：断言首帧时 `muted === false` 且音量 > 0。
+```bash
+npm run verify   # 静态检查 + config / lock / settings 三组自检（64 项，约 2 秒）
+npm run smoke    # 真机端到端（15 项，约 25 秒；需要豆包没在运行，结束会关掉它启动的实例）
+```
 
-`npm run verify:settings` 单独验证设置页（用临时配置，不动你自己的选择）。
+`npm run smoke` 会把上面的链路自动跑一遍（含截图），并且是"有声音"的验收：
+断言首帧时 `muted === false` 且音量 > 0。
 
 ## 许可
 

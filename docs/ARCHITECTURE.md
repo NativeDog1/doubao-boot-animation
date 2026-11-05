@@ -103,7 +103,7 @@ node 读文件 → base64 → Runtime.evaluate（表达式里带字符串）
 3. 退场时音量在 `handoffMs` 内线性淡出到 0，避免"画面在过渡、声音被掐断"。
 
 **响度也是内容的一部分**：源片实测 **-36.0 LUFS / -15.3 dBTP**（AI 生成视频常见），
-在笔记本上几乎听不见。仓库里的 `assets/boot.mp4` 已用 `loudnorm` 拉到
+在笔记本上几乎听不见。仓库里的 `clips/boot-full.mp4` 已用 `loudnorm` 拉到
 **-16.3 LUFS / -1.4 dBTP**，并保留视频流原样（`-c:v copy`）。
 
 ## 4. 视觉：为什么是"虚化淡出"而不是淡出到黑

@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul 2>nul
 rem Doubao Boot Animation - launcher (visible console, shows the log)
 setlocal
 cd /d "%~dp0"

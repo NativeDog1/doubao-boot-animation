@@ -10,13 +10,34 @@
  */
 import { execFile, spawn } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
+import net from 'node:net'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEFAULT_CONFIG_PATH, readConfig } from '../bin/config.mjs'
+import { findDoubao } from '../bin/doubao.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const OUT = join(ROOT, 'scripts', '.out')
 const KEEP_OPEN = process.argv.includes('--keep-open')
-const PORT = 9400 + (process.pid % 100)
+
+/**
+ * 自己找一个空闲端口，而不是 `9400 + pid % 100`。
+ * 后者有两个问题：并发跑两份自检会撞在同一个端口上；端口被别人占着时，
+ * 报出来的是"调试端点超时"，看起来像豆包坏了，其实只是抢不到端口。
+ */
+function freePort() {
+  return new Promise((resolvePromise, reject) => {
+    const server = net.createServer()
+    server.unref()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address()
+      server.close(() => resolvePromise(port))
+    })
+  })
+}
+
+const PORT = await freePort()
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let failures = 0
@@ -96,7 +117,13 @@ if (/Doubao\.exe/i.test(await tasklist())) {
   process.exit(2)
 }
 
-const exe = join(process.env.LOCALAPPDATA ?? '', 'Doubao', 'Application', 'Doubao.exe')
+// 和 bin/inject.mjs 用同一套查找逻辑（含 config.json 的 doubaoPath）：自检里再硬编码
+// 一次安装路径，装在 Program Files 的机器上就会"找不到豆包"，看起来像功能坏了。
+const exe = findDoubao(readConfig(DEFAULT_CONFIG_PATH).config)
+if (exe === null) {
+  console.error('没有找到豆包客户端（Doubao.exe）。请确认已安装，或在 config.json 的 doubaoPath 里写上完整路径。')
+  process.exit(2)
+}
 // 和 bin/inject.mjs 用同一组启动参数：调试端口 + 允许带声音自动播放。
 // 否则自检会在"没有 --autoplay-policy"的豆包里跑，声音必然被拦，测到的不是真实行为。
 const launcher = spawn(
@@ -217,6 +244,13 @@ try {
     })
   })
   check(exitCode === 0, '注入器正常退出', `exit=${String(exitCode)}`)
+
+  // 播完就该退出，不能挂在兜底计时器上。
+  // 这条曾经真的坏过：`Promise.race` 里那个 `sleep(hardTimeoutMs)` 没有人取消，
+  // 于是 8 秒的片头播完了，进程还要再等十几秒才走——启动器"看起来还开着"，
+  // 而且这段时间里再点启动器会被单实例闸门当成"已在运行"。
+  const totalMs = Date.now() - started
+  check(totalMs < 16000, '播完就退出（不挂在兜底计时器上）', `${Math.round(totalMs / 100) / 10}s`)
 
   const cleaned = await waitFor(async () => {
     const result = await cdp.send('Runtime.evaluate', {

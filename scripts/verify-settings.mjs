@@ -11,7 +11,7 @@
  * 用法：node scripts/verify-settings.mjs
  */
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -122,8 +122,34 @@ try {
   const page = await (await fetch(url)).text()
   check(page.includes('设置') && page.includes('boot-full.mp4'), '面板 HTML 带上了状态', page.length + ' bytes')
 
+  const clipPath = join(ROOT, 'clips', 'boot-short.mp4')
+  const clipSize = statSync(clipPath).size
+
   const media = await fetch(api('/media/boot-short.mp4'), { headers: { range: 'bytes=0-1023' } })
   check(media.status === 206, '预览走 Range（206）', String(media.status))
+  check((await media.arrayBuffer()).byteLength === 1024, 'Range 只回请求的那一段（1024 字节）')
+
+  // 后缀范围：`bytes=-1024` 是"最后 1024 字节"，不是"0-1024"。
+  // 以前这里被读成从头开始，预览会跳回片头。
+  const suffix = await fetch(api('/media/boot-short.mp4'), { headers: { range: 'bytes=-1024' } })
+  const suffixBytes = (await suffix.arrayBuffer()).byteLength
+  check(suffix.status === 206 && suffixBytes === 1024, '后缀 Range（bytes=-1024）取最后 1024 字节', `${suffix.status} / ${suffixBytes}`)
+  check(
+    suffix.headers.get('content-range') === `bytes ${clipSize - 1024}-${clipSize - 1}/${clipSize}`,
+    '后缀 Range 的 content-range 正确',
+    String(suffix.headers.get('content-range')),
+  )
+
+  // 结束位置越界：必须夹到文件末尾，否则 content-length 声明得比实际能读到的多，
+  // 浏览器会卡在"缓冲中"不往下走。
+  const clamp = await fetch(api('/media/boot-short.mp4'), { headers: { range: 'bytes=0-99999999' } })
+  const clampBytes = (await clamp.arrayBuffer()).byteLength
+  check(clamp.status === 206 && clampBytes === clipSize, '结束位置越界被夹到文件末尾', `${clamp.status} / ${clampBytes}`)
+
+  // 起始位置越界：按 HTTP 语义应当回 416，而不是回一个空的 206。
+  const beyond = await fetch(api('/media/boot-short.mp4'), { headers: { range: `bytes=${clipSize + 10}-` } })
+  check(beyond.status === 416, '起始位置越界的 Range 回 416', String(beyond.status))
+  check(beyond.headers.get('content-range') === `bytes */${clipSize}`, '416 带上 content-range: bytes */size')
 
   await fetch(api('/api/quit'), { method: 'POST' }).catch(() => {})
 } finally {

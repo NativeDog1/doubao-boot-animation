@@ -9,29 +9,35 @@
  *   1. 用 `--remote-debugging-port` 正常启动豆包（只在 127.0.0.1 上监听）；
  *   2. 从 DevTools 协议拿到主窗口的页面目标；
  *   3. 在页面里挂一个全窗口浮层播放片头，播完"虚化淡出"，让应用从模糊里浮出来；
- *   4. 拆掉浮层、关掉本地视频服务、退出 —— 豆包保持运行，动画之外什么都不碰。
+ *   4. 拆掉浮层、退出 —— 豆包保持运行，动画之外什么都不碰。
  *
  * 设计上的硬约束（每一条都对应一个真实的坑，见 docs/ARCHITECTURE.md）：
  *
  * - **绝不阻塞豆包启动**：先让豆包起来，动画是"附加效果"。任何一步失败只记日志，
  *   不杀进程、不改文件、不拖住用户。
  * - **绝不改豆包的安装目录**：不写 app.asar、不碰签名、不注册 shell 扩展。
- * - **视频只从 127.0.0.1 的一次性端口提供**，动画结束立即关闭；不联网、不上传。
+ * - **视频不经过网络**：以 base64 内联进页面再转成 `blob:`，既不开监听端口，也不发请求。
  * - **单实例**：豆包已在运行时加调试端口不会生效（Chromium 单实例会转交给已有进程），
- *   所以先检测，宁可明确提示也不要"启动了但没动画"。
+ *   所以先检测——已经在跑就问一句要不要关掉重开，而不是"启动了但没动画"。
  */
-import { execFile, spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs'
 import net from 'node:net'
-import { join, relative } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { resolveClip } from './clip-library.mjs'
 import { DEFAULT_CONFIG_PATH, LOG_DIR, ROOT, readConfig } from './config.mjs'
+import { doubaoRunning, findDoubao, sleep, stopDoubao } from './doubao.mjs'
+import { acquireLock } from './lock.mjs'
 
 const APP_NAME = '豆包开机动画'
 const LOG_FILE = join(LOG_DIR, 'latest.log')
+/** 单实例闸门：同一个启动器被点两下时，第二个实例只退出，不参与。 */
+const LOCK_FILE = join(LOG_DIR, 'injector.lock')
 
 const args = new Set(process.argv.slice(2))
 const NO_LAUNCH = args.has('--no-launch')
+/** 豆包在运行时直接关掉重开，不弹确认（自动化/自检用）。 */
+const RESTART = args.has('--restart')
 /** 自动化/自检用：失败时不弹系统消息框，只写日志。 */
 const QUIET = args.has('--quiet')
 const CONFIG_ARG = process.argv.indexOf('--config')
@@ -45,6 +51,28 @@ function log(line) {
     appendFileSync(LOG_FILE, stamped + '\n', 'utf8')
   } catch {
     /* 日志写不了不是失败条件 */
+  }
+}
+
+/**
+ * 日志只保留最近一轮：超过 1MB 就把它挪成 `latest.log.1`（旧的直接丢）。
+ *
+ * 这是个每次启动都追加的文件，一年之后是几十 MB、打开要等——而它存在的意义
+ * 只是"刚才那一次为什么没播"。
+ */
+function pruneLog(maxBytes = 1024 * 1024) {
+  try {
+    if (!existsSync(LOG_FILE)) return
+    if (statSync(LOG_FILE).size <= maxBytes) return
+    const previous = `${LOG_FILE}.1`
+    try {
+      rmSync(previous, { force: true })
+    } catch {
+      /* 上一份删不掉也无所谓，下面 rename 会失败而已 */
+    }
+    renameSync(LOG_FILE, previous)
+  } catch {
+    /* 轮转失败不影响注入 */
   }
 }
 
@@ -69,13 +97,13 @@ function die(message, code = 1, hint = '') {
   process.exit(code)
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
 /**
  * 读配置 + 从片库里挑出这一次要播的那条。
  *
  * `config.json` 里 `video` 是显式路径（最高优先），否则按 `random` / `selected`
  * 从 `clips/` 里挑。挑不到就直接给一句人话，不抛栈。
+ *
+ * 字段的合法性在 `readConfig()` 里已经统一夹过了（见 config.mjs 的 normalizeConfig）。
  */
 function loadConfig() {
   const file = CONFIG_ARG >= 0 ? resolve(process.argv[CONFIG_ARG + 1] ?? '') : DEFAULT_CONFIG_PATH
@@ -85,10 +113,9 @@ function loadConfig() {
   } catch (error) {
     die(`配置文件读不了：${file}`, 2, String(error?.message ?? error))
   }
-  if (config.fit !== 'cover' && config.fit !== 'contain') config.fit = 'cover'
 
   const clip = resolveClip(config, ROOT)
-  if (clip.error !== undefined) die(clip.error, 2, '「片库.vbs」能打开选择面板；也可以直接把视频放进 clips/ 目录。')
+  if (clip.error !== undefined) die(clip.error, 2, '「设置.vbs」能打开选择面板；也可以直接把视频放进 clips/ 目录。')
 
   // 视频是**内联**进页面的（见 overlayScript），所以体积直接决定注入耗时与内存。
   // 这不是技术上限，是体验上限：开机动画应该是"秒开"，不是"等两秒才动"。
@@ -106,29 +133,47 @@ function loadConfig() {
   return { ...config, configPath: file, clip }
 }
 
-/** 豆包主程序：先用户指定，再常见安装位置，最后 PATH。 */
-function findDoubao(config) {
-  if (typeof config.doubaoPath === 'string' && config.doubaoPath !== '' && existsSync(config.doubaoPath)) {
-    return config.doubaoPath
-  }
-  const candidates = [
-    join(process.env.LOCALAPPDATA ?? '', 'Doubao', 'Application', 'Doubao.exe'),
-    join(process.env.LOCALAPPDATA ?? '', 'Doubao', 'Application', 'app', 'launcher', 'Doubao.exe'),
-    join(process.env.PROGRAMFILES ?? '', 'Doubao', 'Doubao.exe'),
-    join(process.env['PROGRAMFILES(X86)'] ?? '', 'Doubao', 'Doubao.exe'),
-  ]
-  for (const candidate of candidates) if (existsSync(candidate)) return candidate
-  return null
-}
+/**
+ * 同步问一句「是/否」。
+ *
+ * 三个刻意的选择，每个都对应一种"问不到人"的失败：
+ *
+ * - **用系统 MessageBox，不在控制台读键盘**：静默版从 `.vbs` 启动时没有控制台，
+ *   读 stdin 会永远等下去。
+ * - **挂在一个 TopMost 的隐藏窗体上**：从快捷方式启动时我们的进程没有可见窗口，
+ *   没有 owner 的对话框会被豆包自己的窗口压在下面——用户看到的是"点了没反应"。
+ * - **有超时**：这是后台进程，没人看着的时候不能永远挂着。超时按"否"处理
+ *   （**不**去杀用户正在用的豆包，这是唯一安全的方向）。
+ *
+ * 返回值：`true` / `false` 是用户的选择，`null` 表示**根本没问成**（PowerShell 不可用、
+ * 被策略挡住、超时）。调用方必须把 `null` 当成"不要动豆包"，并且用别的方式告诉用户。
+ */
+function askYesNo(text, title = APP_NAME, timeoutMs = 120000) {
+  const quote = (value) => `'${String(value).replace(/'/g, "''")}'`
+  const script =
+    `Add-Type -AssemblyName System.Windows.Forms; ` +
+    `$owner = New-Object System.Windows.Forms.Form; ` +
+    `$owner.TopMost = $true; $owner.ShowInTaskbar = $false; $owner.Opacity = 0; ` +
+    `$owner.WindowState = 'Minimized'; $owner.Show(); ` +
+    `$r = [System.Windows.Forms.MessageBox]::Show($owner, ${quote(text)}, ${quote(title)}, ` +
+    `'YesNo', 'Question', 'Warning'); ` +
+    `$owner.Close(); ` +
+    `if ($r -eq 'Yes') { exit 10 } else { exit 11 }`
 
-/** 豆包在跑吗？——单实例会让调试端口失效，必须提前判断。 */
-function doubaoRunning() {
-  return new Promise((resolvePromise) => {
-    execFile('tasklist', ['/FI', 'IMAGENAME eq Doubao.exe', '/NH'], { windowsHide: true }, (error, stdout) => {
-      if (error) return resolvePromise(false)
-      resolvePromise(/Doubao\.exe/i.test(String(stdout)))
+  let result
+  try {
+    result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script], {
+      windowsHide: true,
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
     })
-  })
+  } catch {
+    return null
+  }
+  if (result.error !== undefined) return null
+  if (result.status === 10) return true
+  if (result.status === 11) return false
+  return null
 }
 
 function freePort() {
@@ -516,8 +561,24 @@ async function main() {
     die('这个版本的 Node 不支持内置 WebSocket。', 2, '请安装 Node.js 22 或更新版本：https://nodejs.org/')
   }
 
+  pruneLog()
   const config = loadConfig()
   log(`${APP_NAME} 启动`)
+
+  const lock = acquireLock(LOCK_FILE)
+  if (!lock.ok) {
+    log(`已有启动器在运行（pid ${String(lock.holder)}），这次跳过，不去动豆包`)
+    process.exitCode = 0
+    return
+  }
+  process.on('exit', lock.release)
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, () => {
+      lock.release()
+      process.exit(0)
+    })
+  }
+
   log(`片头：${config.clip.name}（${relative(ROOT, config.clip.path)}${config.clip.reason === 'random' ? ' · 随机' : ''}）`)
 
   const exe = findDoubao(config)
@@ -525,12 +586,39 @@ async function main() {
     die('没有找到豆包客户端。', 2, '请确认已安装豆包桌面端，或在 config.json 的 doubaoPath 里写上 Doubao.exe 的完整路径。')
   }
 
+  // 单实例：豆包已经在跑时，带端口启动会被转交给已有进程，端口不生效。
+  // 与其"启动了但没动画"，不如问一句要不要重开——用户 90% 的情况就是"豆包开着，
+  // 我又点了启动器"。以前这里只会弹一句"先退出豆包"，然后什么都不发生。
   if (!NO_LAUNCH && (await doubaoRunning())) {
-    die(
-      '豆包已经在运行了，这次不会播片头。',
-      3,
-      '豆包是单实例的：已经在运行时，新加的调试端口不会生效。\n请先从托盘退出豆包，再用本启动器打开。',
-    )
+    if (QUIET) {
+      die(
+        '豆包已经在运行了，这次不会播片头。',
+        3,
+        '豆包是单实例的：已经在运行时，新加的调试端口不会生效。\n请先从托盘退出豆包，再用本启动器打开。',
+      )
+    }
+    if (RESTART) {
+      log('豆包正在运行：--restart，直接关掉重开')
+    } else {
+      const answer = askYesNo(
+        '豆包已经在运行了。\n\n片头只在"启动"的那一刻播放，所以要关掉它再打开。\n\n现在重开吗？（当前未发送的内容会丢失）',
+      )
+      if (answer === null) {
+        // 问不到人（PowerShell 被策略挡了、或两分钟没回应）。这个方向是安全的：
+        // **不**去杀用户正在用的豆包，只把"怎么办"说清楚。
+        die(
+          '没能确认要不要重开豆包，为了不打断你正在用的豆包，这次没有动它。',
+          3,
+          '豆包已经在运行。请先从托盘退出豆包，再用本启动器打开；\n或者用 launch.cmd --restart 跳过这句询问。',
+        )
+      }
+      if (answer === false) {
+        die('已取消：豆包保持运行，这次没有播片头。', 3, '下次请先退出豆包，或用桌面上的「豆包（开机动画）」快捷方式打开。')
+      }
+    }
+    log('正在关闭豆包…')
+    if (!(await stopDoubao())) die('没能关掉豆包（可能卡住或权限不足），请手动从托盘退出后再试。', 4)
+    log('豆包已关闭，重新启动')
   }
 
   const explicitPort = PORT_ARG >= 0 ? Number(process.argv[PORT_ARG + 1]) : null
@@ -570,7 +658,12 @@ async function main() {
       }
 
       const visible = await waitForVisiblePage(cdp, config.waitForWindowMs)
-      if (!visible) return
+      if (!visible) {
+        // 不算错误，但必须让退出码能区分"播了"和"没播"——否则 launch.cmd 会安静地
+        // 报成功，用户只看到豆包开了、没有片头，然后去翻日志。
+        process.exitCode = 5
+        return
+      }
 
       // 内联给页面：不走网络（见 overlayScript 上方的说明）。
       const videoBase64 = readFileSync(config.clip.path).toString('base64')
@@ -578,10 +671,25 @@ async function main() {
 
       const expression = overlayScript({ videoBase64, config })
       const hardTimeoutMs = 8.1 * 1000 + config.handoffMs + 15000
-      const outcome = await Promise.race([
-        cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }).then((r) => r.result?.value ?? null),
-        sleep(hardTimeoutMs).then(() => ({ ok: false, reason: 'hard-timeout' })),
-      ])
+
+      // 兜底计时器必须能**取消**。`Promise.race` 只决定"谁先给出结果"，
+      // 输掉的那个不会自己消失：如果这里只写 `sleep(hardTimeoutMs)`，这个
+      // setTimeout 会把 Node 的事件循环按在原地 —— 片头 9 秒就播完了，
+      // 进程却要再等十几秒才退出。表现为启动器"看起来还开着"、
+      // 而且（有了单实例闸门之后）这十几秒内再点启动器会被当成"已在运行"。
+      let hardTimer = null
+      const hardTimeout = new Promise((resolvePromise) => {
+        hardTimer = setTimeout(() => resolvePromise({ ok: false, reason: 'hard-timeout' }), hardTimeoutMs)
+      })
+      let outcome
+      try {
+        outcome = await Promise.race([
+          cdp.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }).then((r) => r.result?.value ?? null),
+          hardTimeout,
+        ])
+      } finally {
+        clearTimeout(hardTimer)
+      }
       log(`片头结束：${JSON.stringify(outcome)}`)
       if (outcome === null || outcome.ok === false) {
         // 页面可能在播放期间被重载：尽力清掉残留浮层，不让用户被卡住。
@@ -596,7 +704,17 @@ async function main() {
     }
   } catch (error) {
     // 动画失败不影响豆包本身：豆包已经在跑，用户只是没看到片头。
-    log(`✗ 注入失败：${String(error?.message ?? error)}`)
+    const message = String(error?.message ?? error)
+    log(`✗ 注入失败：${message}`)
+    // 端口没起来最常见的原因不是"豆包坏了"，而是豆包其实已经在跑（参数被单实例转交），
+    // 或者端口在 freePort() 关掉到豆包绑定之间被别的程序抢走了。分开说清楚。
+    if (/调试端口/.test(message)) {
+      if (await doubaoRunning()) {
+        log('  提示：检测到豆包正在运行——新加的调试端口被已有实例接管了，所以片头没有出现。')
+      } else {
+        log('  提示：豆包没有起来，或这个端口被别的程序占用了。重试一次通常就好。')
+      }
+    }
     process.exitCode = 4
   }
 }

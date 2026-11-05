@@ -39,7 +39,50 @@ export const DEFAULTS = {
 
 export const LOG_DIR = join(process.env.LOCALAPPDATA ?? homedir(), 'DoubaoBootAnimation', 'logs')
 
-/** 读配置：缺字段用默认值，不在这里做业务校验。 */
+/**
+ * 把"能被手改坏"的字段收进能用的范围。
+ *
+ * README 明确说了可以直接编辑 `config.json`，那就必须假设里面会出现
+ * `"volume": "0.6"`（字符串）、`"handoffMs": null`、写到一半没开引号的数字。
+ * 这些东西会一路走进页面：`video.volume = NaN` 在 Chromium 里会被夹掉或抛错，
+ * `setInterval(fn, NaN)` 退化成 0ms 的紧循环——都是"没声音 / 退场卡一下"这种
+ * 最难查的症状。所以**在进入业务逻辑之前**统一夹一次。
+ */
+export function normalizeConfig(input = {}) {
+  const numeric = (value, fallback, min, max) => {
+    // 只接受"数字"或"非空数字字符串"。这一条必须显式写出来，不能用 !Number.isFinite 判断：
+    // `Number(null)` 是 0、`Number([])` 也是 0、`Number(true)` 是 1，全都"有限"——
+    // 于是 `"volume": null` 会被静默变成静音，`"handoffMs": null` 会变成瞬间交接。
+    if (typeof value !== 'number' && typeof value !== 'string') return fallback
+    if (typeof value === 'string' && value.trim() === '') return fallback
+    const number = Number(value)
+    if (!Number.isFinite(number)) return fallback
+    return Math.min(max, Math.max(min, number))
+  }
+  const text = (value, fallback) => (typeof value === 'string' ? value : fallback)
+
+  return {
+    ...input,
+    clipsDir: text(input.clipsDir, DEFAULTS.clipsDir) || DEFAULTS.clipsDir,
+    selected: text(input.selected, DEFAULTS.selected),
+    video: text(input.video, DEFAULTS.video),
+    doubaoPath: text(input.doubaoPath, DEFAULTS.doubaoPath),
+    random: input.random === true,
+    muted: input.muted === true,
+    autoplayWithSound: input.autoplayWithSound !== false,
+    skipButton: input.skipButton !== false,
+    skipOnClick: input.skipOnClick !== false,
+    skipOnEscape: input.skipOnEscape !== false,
+    fit: input.fit === 'contain' ? 'contain' : 'cover',
+    volume: numeric(input.volume, DEFAULTS.volume, 0, 1),
+    handoffMs: Math.round(numeric(input.handoffMs, DEFAULTS.handoffMs, 0, 5000)),
+    firstFrameMs: Math.round(numeric(input.firstFrameMs, DEFAULTS.firstFrameMs, 500, 60000)),
+    waitForWindowMs: Math.round(numeric(input.waitForWindowMs, DEFAULTS.waitForWindowMs, 1000, 120000)),
+    maxVideoMB: numeric(input.maxVideoMB, DEFAULTS.maxVideoMB, 1, 500),
+  }
+}
+
+/** 读配置：缺字段用默认值，并顺手把字段收敛到可用范围。 */
 export function readConfig(file = DEFAULT_CONFIG_PATH) {
   let fromFile = {}
   if (existsSync(file)) {
@@ -49,7 +92,7 @@ export function readConfig(file = DEFAULT_CONFIG_PATH) {
       throw new Error(`配置文件读不了（${file}）：${String(error?.message ?? error)}`)
     }
   }
-  return { path: file, config: { ...DEFAULTS, ...fromFile } }
+  return { path: file, config: normalizeConfig({ ...DEFAULTS, ...fromFile }) }
 }
 
 /** 合并写回：只覆盖传入的字段，其它键原样保留。 */
