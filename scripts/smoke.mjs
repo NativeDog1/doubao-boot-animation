@@ -155,6 +155,19 @@ try {
   if (appeared) {
     check(appeared.full, '浮层铺满窗口', JSON.stringify(appeared))
 
+    const chrome = await cdp.send('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `JSON.stringify({
+        skip: !!document.getElementById('dba-skip'),
+        actions: !!document.getElementById('dba-actions'),
+        noisy: document.querySelectorAll('#dba-actions button').length,
+      })`,
+    })
+    const buttons = JSON.parse(chrome.result.value)
+    check(buttons.actions, '右下角按钮组存在（豆包赢窗口按钮在右上角）')
+    check(buttons.skip, '「跳过」可用')
+    check(buttons.noisy === 1, '片头画面上只有「跳过」一个控件（设置不塞在这里）', `${String(buttons.noisy)} 个`)
+
     // 出现 ≠ 出画面：等真正的首帧（readyState >= HAVE_CURRENT_DATA 且没暂停）。
     const firstFrame = await waitFor(
       async () => {

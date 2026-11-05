@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>豆包开机动画 · 设置</title>
+<style>
+  :root {
+    --bg: #0f1012;
+    --panel: #17191c;
+    --panel-2: #1c1f23;
+    --line: rgba(255,255,255,.09);
+    --text: #f2f3f5;
+    --muted: #9aa0a6;
+    --accent: #4d7cfe;
+    --ok: #2ecc71;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    display: flex; justify-content: center; min-height: 100vh;
+  }
+  main { width: min(780px, 100%); padding: 30px 22px 48px; }
+  header h1 { margin: 0 0 4px; font-size: 19px; font-weight: 600; }
+  header p { margin: 0 0 22px; color: var(--muted); font-size: 12.5px; }
+  header code { color: #cbd2dc; background: rgba(255,255,255,.06); padding: 1px 6px; border-radius: 5px; }
+
+  section {
+    border: 1px solid var(--line); border-radius: 14px; background: var(--panel);
+    margin-bottom: 16px; overflow: hidden;
+  }
+  section > h2 {
+    margin: 0; padding: 13px 16px; font-size: 13px; font-weight: 600; color: #d8dde4;
+    border-bottom: 1px solid var(--line); background: rgba(255,255,255,.02);
+  }
+  .body { padding: 14px 16px; }
+
+  ul.clips { list-style: none; margin: 0; padding: 0; }
+  li.clip {
+    display: flex; align-items: center; gap: 12px; padding: 11px 12px; border-radius: 10px;
+    border: 1px solid transparent;
+  }
+  li.clip + li.clip { margin-top: 4px; }
+  li.clip:hover { background: rgba(255,255,255,.04); }
+  li.clip.current { border-color: rgba(46,204,113,.45); background: rgba(46,204,113,.08); }
+  .meta { flex: 1 1 auto; min-width: 0; }
+  .name { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+  .name .tick { color: var(--ok); font-weight: 700; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .size { color: #6f767d; font-size: 11.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .actions { display: flex; gap: 8px; flex: none; }
+
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px 0; }
+  .row + .row { border-top: 1px solid rgba(255,255,255,.05); }
+  .row .label { font-size: 13px; }
+  .row .hint { color: var(--muted); font-size: 11.5px; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 520px; }
+  .control { display: inline-flex; align-items: center; gap: 9px; flex: none; }
+  input[type="range"] { width: 150px; accent-color: var(--accent); }
+  input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); }
+  select {
+    appearance: none; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 5px 26px 5px 10px; font: inherit; font-size: 12.5px; cursor: pointer;
+  }
+  .value { color: var(--muted); font-size: 12px; min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
+
+  button {
+    appearance: none; border: 1px solid var(--line); background: transparent; color: var(--text);
+    border-radius: 8px; padding: 5px 13px; font: inherit; font-size: 12.5px; cursor: pointer;
+    transition: background-color .15s ease, border-color .15s ease;
+  }
+  button:hover { background: rgba(255,255,255,.07); }
+  button.primary { border-color: rgba(77,124,254,.6); color: #cfe0ff; }
+  button.primary:hover { background: rgba(77,124,254,.16); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button[disabled] { opacity: .45; cursor: default; }
+
+  footer { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
+  footer .spacer { flex: 1 1 auto; }
+  footer .tip { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .empty { padding: 22px 12px; text-align: center; color: var(--muted); font-size: 12.5px; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 8px);
+    background: #23262b; border: 1px solid var(--line); color: var(--text);
+    padding: 8px 16px; border-radius: 999px; font-size: 12.5px;
+    opacity: 0; pointer-events: none; transition: opacity .18s ease, transform .18s ease;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  dialog {
+    border: 1px solid var(--line); background: #0b0c0e; color: var(--text);
+    border-radius: 14px; padding: 0; width: min(880px, 92vw);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.72); }
+  .player-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .player-head .title { flex: 1 1 auto; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  video { display: block; width: 100%; max-height: 72vh; background: #000; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>豆包开机动画 · 设置</h1>
+    <p>改完立刻写进 <code>config.json</code>，<strong>下次启动豆包</strong>生效。片头画面里不会出现任何设置按钮。</p>
+  </header>
+
+  <section>
+    <h2>片头</h2>
+    <div class="body">
+      <ul class="clips" id="list"></ul>
+      <div class="empty" id="empty" hidden>片头目录里还没有视频。把 mp4 / webm 放进去，刷新本页即可。</div>
+      <div class="row" style="margin-top:12px">
+        <div>
+          <div class="label">每次启动随机挑一条</div>
+          <div class="hint">开了以后不用管选中哪一条</div>
+        </div>
+        <div class="control"><input type="checkbox" id="random"></div>
+      </div>
+      <div class="row">
+        <div class="hint" id="dir"></div>
+        <div class="control"><button id="openFolder">打开片头目录</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>播放</h2>
+    <div class="body">
+      <div class="row">
+        <div><div class="label">音量</div><div class="hint">片头默认带声音</div></div>
+        <div class="control">
+          <input type="range" id="volume" min="0" max="1" step="0.05">
+          <span class="value" id="volumeText"></span>
+        </div>
+      </div>
+      <div class="row">
+        <div><div class="label">静音</div><div class="hint">只播画面，不发声</div></div>
+        <div class="control"><input type="checkbox" id="muted"></div>
+      </div>
+      <div class="row">
+        <div><div class="label">铺满方式</div><div class="hint">cover 铺满裁切；contain 完整显示、留黑边</div></div>
+        <div class="control">
+          <select id="fit">
+            <option value="cover">cover · 铺满</option>
+            <option value="contain">contain · 完整</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>跳过</h2>
+    <div class="body">
+      <div class="row">
+        <div><div class="label">显示「跳过」按钮</div><div class="hint">右下角（豆包的窗口按钮在右上角）</div></div>
+        <div class="control"><input type="checkbox" id="skipButton"></div>
+      </div>
+      <div class="row">
+        <div><div class="label">点击画面任意处跳过</div><div class="hint">&nbsp;</div></div>
+        <div class="control"><input type="checkbox" id="skipOnClick"></div>
+      </div>
+      <div class="row">
+        <div><div class="label">按 Esc 跳过</div><div class="hint">&nbsp;</div></div>
+        <div class="control"><input type="checkbox" id="skipOnEscape"></div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span class="tip" id="tip"></span>
+    <span class="spacer"></span>
+    <button id="quit">关闭</button>
+  </footer>
+
+  <div class="toast" id="toast"></div>
+
+  <dialog id="player">
+    <div class="player-head">
+      <span class="title" id="playerTitle">预览</span>
+      <button id="playerClose">关闭</button>
+    </div>
+    <video id="video" controls playsinline></video>
+  </dialog>
+</main>
+
+<script>
+  const BOOT = /*__BOOT_STATE__*/;
+  const TOKEN = BOOT.token;
+  const api = (path) => path + (path.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(TOKEN);
+
+  const el = (id) => document.getElementById(id);
+  const listEl = el('list');
+  const toastEl = el('toast');
+  const dialog = el('player');
+  const video = el('video');
+
+  let state = BOOT.state;
+  let toastTimer = null;
+
+  function toast(text) {
+    toastEl.textContent = text;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200);
+  }
+
+  function fmt(bytes) {
+    if (!bytes) return '';
+    return bytes >= 1024 * 1024 ? (bytes / 1024 / 1024).toFixed(1) + ' MB' : Math.round(bytes / 1024) + ' KB';
+  }
+
+  function render() {
+    el('dir').textContent = '片头目录：' + state.clipsDir;
+    el('random').checked = state.random === true;
+    el('muted').checked = state.muted === true;
+    el('volume').value = String(state.volume);
+    el('volumeText').textContent = Math.round(state.volume * 100) + '%';
+    el('volume').disabled = state.muted === true;
+    el('fit').value = state.fit;
+    el('skipButton').checked = state.skipButton !== false;
+    el('skipOnClick').checked = state.skipOnClick !== false;
+    el('skipOnEscape').checked = state.skipOnEscape !== false;
+    el('tip').textContent = state.clips.length === 0
+      ? '还没有片头'
+      : '当前：' + (state.clips.find((c) => c.file === state.selected)?.name || state.selected);
+
+    listEl.innerHTML = '';
+    el('empty').hidden = state.clips.length !== 0;
+
+    for (const clip of state.clips) {
+      const li = document.createElement('li');
+      li.className = 'clip' + (clip.file === state.selected ? ' current' : '');
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const name = document.createElement('div');
+      name.className = 'name';
+      if (clip.file === state.selected) {
+        const tick = document.createElement('span');
+        tick.className = 'tick';
+        tick.textContent = '✓';
+        name.append(tick);
+      }
+      name.append(document.createTextNode(clip.name));
+      const note = document.createElement('div');
+      note.className = 'note';
+      note.textContent = clip.note || clip.file;
+      meta.append(name, note);
+
+      const size = document.createElement('span');
+      size.className = 'size';
+      size.textContent = fmt(clip.bytes);
+
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const preview = document.createElement('button');
+      preview.textContent = '预览';
+      preview.addEventListener('click', () => openPreview(clip));
+      const choose = document.createElement('button');
+      choose.textContent = clip.file === state.selected ? '已选用' : '选用';
+      choose.className = clip.file === state.selected ? '' : 'primary';
+      choose.disabled = clip.file === state.selected;
+      choose.addEventListener('click', () => select(clip.file));
+      actions.append(preview, choose);
+
+      li.append(meta, size, actions);
+      listEl.append(li);
+    }
+  }
+
+  async function post(path, body) {
+    const res = await fetch(api(path), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+    });
+    return res.json();
+  }
+
+  async function select(file) {
+    const data = await post('/api/select', { file });
+    if (!data.ok) return toast(data.error || '保存失败');
+    state = data.state;
+    render();
+    toast(data.turnedOffRandom ? '已选用，随机播放已关闭' : '已选用，下次启动生效');
+  }
+
+  async function save(patch) {
+    const data = await post('/api/settings', patch);
+    if (!data.ok) return toast(data.error || '保存失败');
+    state = data.state;
+    render();
+    toast('已保存');
+  }
+
+  function openPreview(clip) {
+    el('playerTitle').textContent = clip.name + (clip.note ? ' · ' + clip.note : '');
+    video.src = api('/media/' + encodeURIComponent(clip.file));
+    video.currentTime = 0;
+    dialog.showModal();
+    video.play().catch(() => {});
+  }
+
+  function closePreview() {
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    if (dialog.open) dialog.close();
+  }
+
+  el('playerClose').addEventListener('click', closePreview);
+  dialog.addEventListener('close', closePreview);
+
+  el('random').addEventListener('change', (e) => save({ random: e.target.checked }));
+  el('muted').addEventListener('change', (e) => save({ muted: e.target.checked }));
+  el('volume').addEventListener('change', (e) => save({ volume: Number(e.target.value) }));
+  el('fit').addEventListener('change', (e) => save({ fit: e.target.value }));
+  el('skipButton').addEventListener('change', (e) => save({ skipButton: e.target.checked }));
+  el('skipOnClick').addEventListener('change', (e) => save({ skipOnClick: e.target.checked }));
+  el('skipOnEscape').addEventListener('change', (e) => save({ skipOnEscape: e.target.checked }));
+
+  el('openFolder').addEventListener('click', async () => {
+    await post('/api/open-folder');
+    toast('已打开片头目录');
+  });
+
+  el('quit').addEventListener('click', async () => {
+    await fetch(api('/api/quit'), { method: 'POST' }).catch(() => {});
+    window.close();
+  });
+
+  render();
+</script>
+</body>
+</html>

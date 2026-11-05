@@ -23,49 +23,12 @@
 import { execFile, spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import net from 'node:net'
-import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, relative } from 'node:path'
+import { resolveClip } from './clip-library.mjs'
+import { DEFAULT_CONFIG_PATH, LOG_DIR, ROOT, readConfig } from './config.mjs'
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const APP_NAME = '豆包开机动画'
-const LOG_DIR = join(process.env.LOCALAPPDATA ?? homedir(), 'DoubaoBootAnimation', 'logs')
 const LOG_FILE = join(LOG_DIR, 'latest.log')
-
-/** 默认配置；`config.json` 里的同名字段覆盖这里。 */
-const DEFAULTS = {
-  /** 片头视频，相对项目根目录（也可以用绝对路径）。 */
-  video: 'assets/boot.mp4',
-  /** `cover` 铺满裁切；`contain` 完整显示、留黑边。 */
-  fit: 'cover',
-  /** 静音播放。0.2.0 起**默认带声音**；想安静就把这里改成 true。 */
-  muted: false,
-  /** 音量，0~1。 */
-  volume: 1,
-  /**
-   * 让豆包以「不需要用户手势也能出声」的策略启动。
-   *
-   * 刚启动的浏览器没有任何用户手势，Chromium 的自动播放策略本来会拦掉带声音的
-   * 播放；这个启动标志把它关掉。不想改启动参数就设为 false（片头会退回静音）。
-   */
-  autoplayWithSound: true,
-  /** 右下角「跳过」按钮。豆包的窗口按钮画在页面右上角，所以这里必须避开右上。 */
-  skipButton: true,
-  /** 点击画面任意处跳过。 */
-  skipOnClick: true,
-  /** Esc 跳过。 */
-  skipOnEscape: true,
-  /** 退场过渡时长（毫秒），比 CSS 的 460ms 略长，避免把过渡切断。 */
-  handoffMs: 520,
-  /** 等窗口可见的上限；超时就不播（比在最小化窗口里空放一遍好）。 */
-  waitForWindowMs: 15000,
-  /** 片头开始后，等待首帧的上限；超时就当作失败、直接交接。 */
-  firstFrameMs: 8000,
-  /** 内联视频的上限。超过就拒绝并提示压缩——开机动画不该有几十 MB。 */
-  maxVideoMB: 30,
-  /** 指定豆包主程序；留空则自动找。 */
-  doubaoPath: '',
-}
 
 const args = new Set(process.argv.slice(2))
 const NO_LAUNCH = args.has('--no-launch')
@@ -108,37 +71,39 @@ function die(message, code = 1, hint = '') {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * 读配置 + 从片库里挑出这一次要播的那条。
+ *
+ * `config.json` 里 `video` 是显式路径（最高优先），否则按 `random` / `selected`
+ * 从 `clips/` 里挑。挑不到就直接给一句人话，不抛栈。
+ */
 function loadConfig() {
-  const file = CONFIG_ARG >= 0 ? resolve(process.argv[CONFIG_ARG + 1] ?? '') : join(ROOT, 'config.json')
-  let fromFile = {}
-  if (existsSync(file)) {
-    try {
-      fromFile = JSON.parse(readFileSync(file, 'utf8'))
-    } catch (error) {
-      die(`配置文件读不了：${file}`, 2, String(error))
-    }
+  const file = CONFIG_ARG >= 0 ? resolve(process.argv[CONFIG_ARG + 1] ?? '') : DEFAULT_CONFIG_PATH
+  let config
+  try {
+    ;({ config } = readConfig(file))
+  } catch (error) {
+    die(`配置文件读不了：${file}`, 2, String(error?.message ?? error))
   }
-  const config = { ...DEFAULTS, ...fromFile }
-  config.videoPath = resolve(ROOT, config.video)
-  if (!existsSync(config.videoPath)) {
-    die(`找不到片头视频：${config.videoPath}`, 2, '把 mp4 放到 assets/boot.mp4，或在 config.json 里改 video。')
-  }
-  if (statSync(config.videoPath).size === 0) die(`片头视频是空文件：${config.videoPath}`, 2)
+  if (config.fit !== 'cover' && config.fit !== 'contain') config.fit = 'cover'
+
+  const clip = resolveClip(config, ROOT)
+  if (clip.error !== undefined) die(clip.error, 2, '「片库.vbs」能打开选择面板；也可以直接把视频放进 clips/ 目录。')
 
   // 视频是**内联**进页面的（见 overlayScript），所以体积直接决定注入耗时与内存。
   // 这不是技术上限，是体验上限：开机动画应该是"秒开"，不是"等两秒才动"。
-  const bytes = statSync(config.videoPath).size
+  const bytes = clip.bytes ?? statSync(clip.path).size
   const limitMB = Math.max(1, Number(config.maxVideoMB) || 30)
   if (bytes > limitMB * 1024 * 1024) {
     die(
-      `片头视频太大：${(bytes / 1024 / 1024).toFixed(1)} MB，上限 ${String(limitMB)} MB。`,
+      `片头视频太大：${(bytes / 1024 / 1024).toFixed(1)} MB（${clip.file}），上限 ${String(limitMB)} MB。`,
       2,
       '开机动画建议压到 10MB 以内；一行命令：\n' +
-        `ffmpeg -i "输入.mp4" -c:v libx264 -crf 22 -preset medium -pix_fmt yuv420p -movflags +faststart -c:a aac -b:a 96k "assets/boot.mp4"`,
+        `ffmpeg -i "输入.mp4" -c:v libx264 -crf 22 -preset medium -pix_fmt yuv420p -movflags +faststart -c:a aac -b:a 96k "clips/新片头.mp4"`,
     )
   }
-  if (config.fit !== 'cover' && config.fit !== 'contain') config.fit = 'cover'
-  return config
+
+  return { ...config, configPath: file, clip }
 }
 
 /** 豆包主程序：先用户指定，再常见安装位置，最后 PATH。 */
@@ -382,22 +347,29 @@ function overlayScript({ videoBase64, config }) {
     'transition:opacity .46s ease,filter .46s ease,transform .46s ease',
   ].join(';')
 
-  let skipButton = null
+  // 右下角只有「跳过」。片头的选择/音量/铺满方式都在**设置**里（设置.vbs），
+  // 不往动画画面上塞控件——动画本身越干净越好。
+  const actions = document.createElement('div')
+  actions.id = 'dba-actions'
+  actions.style.cssText = [
+    'position:absolute', 'right:24px', 'bottom:24px', 'z-index:2',
+    'display:flex', 'align-items:center', 'gap:8px',
+  ].join(';')
+
   if (CFG.skipButton) {
-    skipButton = document.createElement('button')
+    const skipButton = document.createElement('button')
     skipButton.id = 'dba-skip'
     skipButton.type = 'button'
     skipButton.textContent = '跳过'
     skipButton.title = '跳过片头（Esc）'
-    // 右下角：豆包的窗口按钮在页面右上角，放右上会压住关闭键。
     skipButton.style.cssText = [
-      'position:absolute', 'right:24px', 'bottom:24px', 'z-index:2',
       'border:1px solid rgba(255,255,255,.42)', 'background:rgba(0,0,0,.42)',
       'color:#fff', 'border-radius:999px', 'padding:6px 16px',
       'font:13px/1.4 inherit', 'cursor:pointer', 'opacity:.92',
       'transition:opacity .15s ease,background-color .15s ease',
     ].join(';')
     skipButton.addEventListener('click', (event) => { event.stopPropagation(); finish('skip-button') })
+    actions.append(skipButton)
   }
 
   const hint = document.createElement('div')
@@ -410,7 +382,7 @@ function overlayScript({ videoBase64, config }) {
   ].join(';')
 
   root.append(video, hint)
-  if (skipButton) root.append(skipButton)
+  if (actions.childElementCount > 0) root.append(actions)
   document.documentElement.appendChild(root)
 
   const startedAt = performance.now()
@@ -546,7 +518,7 @@ async function main() {
 
   const config = loadConfig()
   log(`${APP_NAME} 启动`)
-  log(`片头：${config.videoPath}`)
+  log(`片头：${config.clip.name}（${relative(ROOT, config.clip.path)}${config.clip.reason === 'random' ? ' · 随机' : ''}）`)
 
   const exe = findDoubao(config)
   if (exe === null) {
@@ -601,7 +573,7 @@ async function main() {
       if (!visible) return
 
       // 内联给页面：不走网络（见 overlayScript 上方的说明）。
-      const videoBase64 = readFileSync(config.videoPath).toString('base64')
+      const videoBase64 = readFileSync(config.clip.path).toString('base64')
       log(`视频已内联：${(videoBase64.length / 1024 / 1024).toFixed(2)} MB (base64)`)
 
       const expression = overlayScript({ videoBase64, config })

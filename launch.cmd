@@ -1,5 +1,5 @@
 @echo off
-rem 豆包开机动画 · 可见控制台版本（有日志，适合排查问题）
+rem Doubao Boot Animation - launcher (visible console, shows the log)
 setlocal
 cd /d "%~dp0"
 

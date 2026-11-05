@@ -1,15 +1,17 @@
 {
   "name": "doubao-boot-animation",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
-  "description": "豆包桌面端开机动画：启动时在窗口内播放一段带声音的片头，播完虚化淡出，让应用从模糊里浮出来。",
+  "description": "豆包桌面端开机动画：启动时在窗口内播放一段带声音的片头，播完虚化淡出；多套片头可自选。",
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "start": "node bin/inject.mjs",
-    "check": "node --check bin/inject.mjs && node --check scripts/smoke.mjs",
+    "settings": "node bin/settings.mjs",
+    "check": "node --check bin/config.mjs && node --check bin/clip-library.mjs && node --check bin/inject.mjs && node --check bin/settings.mjs && node --check scripts/smoke.mjs && node --check scripts/verify-settings.mjs",
+    "verify:settings": "node scripts/verify-settings.mjs",
     "smoke": "node scripts/smoke.mjs"
   },
   "keywords": [

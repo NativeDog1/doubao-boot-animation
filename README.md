@@ -22,7 +22,7 @@
 ```
 launch.vbs ──▶ 以 --remote-debugging-port 正常启动豆包（只监听 127.0.0.1）
             ──▶ 连上 DevTools 协议，拿到主窗口的页面目标
-            ──▶ 在页面里挂一个全窗口浮层，播放 assets/boot.mp4（内联成 blob，不走网络）
+            ──▶ 在页面里挂一个全窗口浮层，播放 clips/ 里选中的那条（内联成 blob，不走网络）
             ──▶ 播完：虚化淡出 → 拆掉浮层 → 自己退出
 ```
 
@@ -38,17 +38,43 @@ launch.vbs ──▶ 以 --remote-debugging-port 正常启动豆包（只监听 
 想让它变成"日常打开豆包的方式"：右键 `launch.vbs` → 发送到 → 桌面快捷方式，
 把名字改成「豆包」，用它替换原来的豆包图标即可。
 
+## 设置（选片头、音量、跳过方式）
+
+双击 **`设置.vbs`**（或 `settings.cmd`），浏览器会打开一个本地设置页；
+改完立刻写进 `config.json`，**下次启动豆包**生效。
+
+![设置页](docs/media/settings.png)
+
+- **片头**：列出 `clips/` 里的所有视频，可**预览**、**选用**、或改成**每次随机**；
+- **播放**：音量、静音、铺满（cover）/ 完整（contain）；
+- **跳过**：按钮、点击画面、Esc 三条各自可关。
+
+> 设计上刻意**不把设置塞进片头画面**：动画里只有一个「跳过」。要改东西去设置页，
+> 片头保持干净——这也是"看起来像应用自己的一部分"的前提。
+
+服务只在 `127.0.0.1` 上开一个一次性端口、带随机 token，关掉页面或 10 分钟无操作就退出；
+它只读 `clips/`、只写 `config.json`。
+
 ## 换你自己的片头
 
-把你自己的 mp4 放到 `assets/boot.mp4`（覆盖原文件），或者在 `config.json` 里写别的路径：
+把 mp4 / webm **丢进 `clips/` 目录**，设置页里就会多一条，点「选用」即可。
+不需要登记、不需要改代码——文件名就是它的 id。
+
+想给它一个好看的名字和一句说明，在 `clips/clips.json` 里加一条（可选）：
+
+```json
+{ "my-intro.mp4": { "name": "我的片头", "note": "自制 · 6 秒" } }
+```
+
+也可以完全绕过目录，直接在 `config.json` 里写绝对路径（优先级最高）：
 
 ```json
 { "video": "D:\\videos\\my-intro.mp4" }
 ```
 
 建议：**H.264 + AAC + `+faststart`（moov 前置）**。索引表在末尾的 mp4 要先整段下载才出画面，
-开机动画这种场景会明显看到黑屏。仓库里的 `assets/boot.mp4` 是 720p60 / 2.9MB / faststart /
-响度标准化过（-16.3 LUFS）的版本。
+开机动画这种场景会明显看到黑屏。仓库自带的 `clips/boot-full.mp4` 是 720p60 / 2.9MB / faststart /
+响度标准化过（-16.3 LUFS）的版本；`clips/boot-short.mp4` 是同一素材的精简 4 秒版。
 
 如果换视频后觉得"声音太小"，多半不是播放问题而是源片本身太轻（这批 AI 生成视频常见 -35 LUFS 上下）。
 一行命令拉齐响度：
@@ -61,7 +87,10 @@ ffmpeg -i in.mp4 -c:v copy -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a aac -b:a 160
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `video` | `assets/boot.mp4` | 片头视频，相对项目根目录或绝对路径 |
+| `clipsDir` | `clips` | 片头目录；里面的 mp4/webm 会自动出现在设置页 |
+| `selected` | `boot-full.mp4` | 当前选用的片头（文件名） |
+| `random` | `false` | 每次启动随机挑一条 |
+| `video` | `""` | 绝对/相对路径的显式覆盖，优先级最高 |
 | `fit` | `cover` | `cover` 铺满裁切；`contain` 完整显示、留黑边 |
 | `muted` | `false` | **默认带声音**；改成 `true` 就静音 |
 | `volume` | `1` | 音量 0~1 |
@@ -74,6 +103,9 @@ ffmpeg -i in.mp4 -c:v copy -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a aac -b:a 160
 | `firstFrameMs` | `8000` | 等首帧的上限；超时就交接，不把界面扣住 |
 | `maxVideoMB` | `30` | 内联视频的体积上限（视频是直接进内存的） |
 | `doubaoPath` | `""` | 豆包主程序；留空自动找 |
+
+> 这些字段都能在设置页里改；直接编辑 `config.json` 同样有效（注入器每次都现读）。
+> 设置页写文件是原子的（先写临时文件再 rename），不会读到半截 JSON。
 
 ## 声音（0.2.0 起默认开）
 
@@ -88,7 +120,7 @@ ffmpeg -i in.mp4 -c:v copy -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a aac -b:a 160
 
 音量与静音：`volume`（0~1）、`muted`。想安静启动就把 `muted` 改成 `true`。
 
-> 仓库里的 `assets/boot.mp4` 做过**响度标准化**：源片整体只有 **-36 LUFS**（峰值 -15.3 dBTP），
+> 仓库里的 `clips/boot-full.mp4` 做过**响度标准化**：源片整体只有 **-36 LUFS**（峰值 -15.3 dBTP），
 > 直接播在笔记本上几乎听不见；已拉到 **-16.3 LUFS / -1.4 dBTP**（`loudnorm`）。
 > 换自己的视频时如果也觉得"声音太小"，用同样的参数过一遍即可。
 
@@ -143,13 +175,20 @@ ffmpeg -i in.mp4 -c:v copy -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a aac -b:a 160
 ## 目录结构
 
 ```
-launch.vbs / launch.cmd    入口（静默 / 带日志）
-config.json                片头与行为配置
-bin/inject.mjs             注入器：启动豆包 → CDP 连接 → 注入浮层 → 交接 → 清理
-assets/boot.mp4            片头视频（可替换）
-scripts/smoke.mjs          端到端自检（会启动并关闭一次豆包）
-docs/ARCHITECTURE.md       为什么这么做、怎么验证的
-docs/media/                README 用的截图
+launch.vbs / launch.cmd      入口（静默 / 带日志）
+设置.vbs / settings.cmd       设置页：选片头、音量、铺满、跳过方式
+config.json                  片头与行为配置（设置页写的就是它）
+clips/                       片头目录：丢进去就出现在设置页
+clips/clips.json             可选：给片头起展示名 / 写一句说明
+bin/inject.mjs               注入器：启动豆包 → CDP 连接 → 注入浮层 → 交接 → 清理
+bin/settings.mjs             设置页服务端（一次性本地服务 + token）
+bin/clip-library.mjs         片库：扫目录、按配置选一条
+bin/config.mjs               配置读写（原子写，注入器与设置页共用）
+ui/settings.html             设置页前端
+scripts/smoke.mjs            端到端自检（会启动并关闭一次豆包）
+scripts/verify-settings.mjs  设置页服务端自检（不开浏览器、不动你的配置）
+docs/ARCHITECTURE.md         为什么这么做、怎么验证的
+docs/media/                  README 用的截图
 ```
 
 ## 它是怎么验证的
@@ -163,12 +202,16 @@ docs/media/                README 用的截图
 | 视频怎么送进去 | **不走网络**：内联 blob 后 `loadedmetadata` **68ms**、`playing` **261ms**（走本机 HTTP 时请求会被应用启动挤到 3.2 秒后才发出） |
 | 是否有声音 | `muted:false / volume:1 / soundBlocked:false`，`--autoplay-policy=no-user-gesture-required` 下直接出声 |
 | 浮层是否真的铺满窗口 | 注入后截图：整窗覆盖（含豆包自绘标题栏），见上面的图 |
+| 片头上只有跳过 | 自检断言 `#dba-actions` 里**只有 1 个**控件（设置不塞进动画） |
 | 交接是否生效 | 退场 230ms 时截图：视频已淡出、应用呈强模糊，随后转清 |
 | 退场清理 | 注入器 exit 0，`#dba-root` 与样式表都已移除 |
+| 设置页 | `verify:settings` 覆盖：token 校验、列目录、选用落盘并关随机、目录外文件被拒、音量夹取、铺满/跳过开关落盘、HTML 带状态、预览走 Range |
 
 `npm run smoke` 会把上面这条链路自动跑一遍（需要豆包没在运行，测试结束会关掉它自己启动的实例）。
 它同时是"有声音"的验收：断言首帧时 `muted === false` 且音量 > 0。
 
+`npm run verify:settings` 单独验证设置页（用临时配置，不动你自己的选择）。
+
 ## 许可
 
-BSD-3-Clause，见 [LICENSE](LICENSE)。`assets/boot.mp4` 由项目作者提供，随仓库以相同条款分发。
+BSD-3-Clause，见 [LICENSE](LICENSE)。`clips/` 下的片头由项目作者提供，随仓库以相同条款分发。

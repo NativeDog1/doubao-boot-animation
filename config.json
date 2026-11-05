@@ -1,5 +1,8 @@
 {
-  "video": "assets/boot.mp4",
+  "clipsDir": "clips",
+  "selected": "boot-full.mp4",
+  "random": false,
+  "video": "",
   "fit": "cover",
   "muted": false,
   "volume": 1,
